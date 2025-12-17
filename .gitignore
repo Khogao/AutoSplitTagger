@@ -1,0 +1,33 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+
+# PyInstaller
+build/
+dist/
+*.spec
+
+# Logs
+*.log
+crash_log.txt
+debug_log.txt
+
+# Temp files
+*.iso
+temp_*
+*.tmp
+
+# VS Code / IDE
+.vscode/
+.idea/
+
+# Environment
+.env
+venv/
+env/
+
+# Output Results (Don't commit music files!)
+*.flac
+*.nrg
+*.wav
