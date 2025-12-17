@@ -87,6 +87,8 @@ class AudioProcessor:
     def get_resource_path(self, relative_path):
         """ Get absolute path to resource, works for dev and for PyInstaller """
         import sys
+        import shutil
+        
         if hasattr(sys, '_MEIPASS'):
             # PyInstaller creates a temp folder and stores path in _MEIPASS
             return os.path.join(sys._MEIPASS, relative_path)
@@ -101,7 +103,28 @@ class AudioProcessor:
             "fpcalc.exe": os.path.join(bin_dir, "fpcalc.exe"),
             "sacd_extract.exe": os.path.join(bin_dir, "sacd_extract.exe")
         }
-        return dev_map.get(relative_path, os.path.join(os.path.abspath("."), relative_path))
+        
+        bundled_path = dev_map.get(relative_path, os.path.join(os.path.abspath("."), relative_path))
+        
+        # Fallback to system PATH if bundled doesn't work
+        if relative_path in ["ffmpeg.exe", "fpcalc.exe"]:
+            # Test if bundled version works
+            if os.path.exists(bundled_path):
+                try:
+                    result = subprocess.run([bundled_path, "-version"], 
+                                          capture_output=True, timeout=2)
+                    if result.returncode == 0:
+                        return bundled_path  # Works!
+                except:
+                    pass  # Bundled version failed
+            
+            # Try system version
+            system_path = shutil.which(relative_path.replace(".exe", ""))
+            if system_path:
+                print(f"Using system {relative_path}: {system_path}")
+                return system_path
+        
+        return bundled_path
 
     def detect_silence(self, file_path, db_threshold=-40, min_duration=2.0):
         """
@@ -591,98 +614,173 @@ class AudioProcessor:
     # --- CUE / BIN SUPPORT ---
     def parse_cue(self, cue_path):
         """
-        Parses .cue file to find the BIN file and Track Timestamps.
-        Returns: (bin_filename, tracks_list)
-                 tracks_list = [(start_sec, end_sec, track_num)]
+        Parses .cue file to find the BIN file, Track Timestamps, and Metadata.
+        Returns: (bin_filename, tracks_list, metadata)
+                 tracks_list = [(start_sec, end_sec, track_num, track_title, track_performer)]
+                 metadata = {'album': str, 'album_artist': str, 'date': str, ...}
         """
         tracks = []
         bin_file = None
         current_track_idx = 0
-        current_index01 = 0.0
+        current_track_title = ""
+        current_track_performer = ""
+        
+        # Album-level metadata
+        album_title = ""
+        album_artist = ""
+        album_date = ""
+        album_genre = ""
+        in_track = False
         
         try:
             with open(cue_path, 'r', encoding='utf-8', errors='ignore') as f:
                 lines = f.readlines()
                 
             for line in lines:
-                parts = line.strip().split()
+                stripped = line.strip()
+                parts = stripped.split()
                 if not parts: continue
                 
                 # FILE "Name.bin" BINARY
                 if parts[0] == 'FILE':
-                    # Extract filename between quotes
-                    match = re.search(r'FILE "(.*)"', line)
+                    match = re.search(r'FILE "(.+)"', line)
                     if match:
                         bin_file = match.group(1)
                     else:
-                        # Fallback simple split if regex fails (rare)
                         bin_file = " ".join(parts[1:-1]).strip('"')
+                
+                # REM DATE or REM GENRE
+                elif parts[0] == 'REM' and len(parts) >= 3:
+                    if parts[1] == 'DATE':
+                        album_date = " ".join(parts[2:])
+                    elif parts[1] == 'GENRE':
+                        album_genre = " ".join(parts[2:])
+                
+                # PERFORMER "Artist Name"
+                elif parts[0] == 'PERFORMER':
+                    match = re.search(r'PERFORMER "(.+)"', line)
+                    if match:
+                        performer = match.group(1)
+                        if not in_track:
+                            album_artist = performer
+                        else:
+                            current_track_performer = performer
+                
+                # TITLE "Album/Track Title"
+                elif parts[0] == 'TITLE':
+                    match = re.search(r'TITLE "(.+)"', line)
+                    if match:
+                        title = match.group(1)
+                        if not in_track:
+                            album_title = title
+                        else:
+                            current_track_title = title
                         
                 # TRACK 01 AUDIO
                 elif parts[0] == 'TRACK':
+                    in_track = True
                     current_track_idx = int(parts[1])
+                    current_track_title = ""
+                    current_track_performer = ""
                     
                 # INDEX 01 00:00:00
                 elif parts[0] == 'INDEX' and parts[1] == '01':
-                    timestamp = parts[2] # MM:SS:FF
+                    timestamp = parts[2]  # MM:SS:FF
                     try:
                         m, s, f_res = map(int, timestamp.split(':'))
                         seconds = m*60 + s + f_res/75.0
                         
                         if current_track_idx > 1 and tracks:
                             # Close previous track
-                            prev_start, _, prev_id = tracks[-1]
-                            tracks[-1] = (prev_start, seconds, prev_id)
+                            prev_data = tracks[-1]
+                            tracks[-1] = (prev_data[0], seconds, prev_data[2], prev_data[3], prev_data[4])
                             
-                        # Start new track
-                        tracks.append((seconds, None, current_track_idx)) # End is None for now
+                        # Start new track with metadata
+                        tracks.append((seconds, None, current_track_idx, 
+                                     current_track_title, current_track_performer))
                     except ValueError:
-                        pass # Ignore malformed index
+                        pass
             
-            # Handle last track end? We leave it None.
+            metadata = {
+                'album': album_title,
+                'album_artist': album_artist or "Various Artists",
+                'date': album_date,
+                'genre': album_genre
+            }
             
         except Exception as e:
             print(f"CUE Parse Error: {e}")
-            return None, []
+            return None, [], {}
             
-        return bin_file, tracks
+        return bin_file, tracks, metadata
 
     def extract_cue_direct(self, cue_path, output_dir):
         print(f"Processing CUE Sheet: {cue_path}")
-        bin_filename, tracks = self.parse_cue(cue_path)
+        bin_filename, tracks, metadata = self.parse_cue(cue_path)
         
         if not bin_filename or not tracks:
             print("Invalid CUE or no tracks found.")
             return []
             
-        # Locate BIN file
-        # Usually in same dir as CUE
+        # Locate source file (BIN/WAV/FLAC/APE)
         cue_dir = os.path.dirname(cue_path)
-        bin_path = os.path.join(cue_dir, bin_filename)
+        source_path = os.path.join(cue_dir, bin_filename)
         
-        # If BIN not found, try replacing extension of CUE to BIN (common mismatch)
-        if not os.path.exists(bin_path):
-             alt_bin = os.path.splitext(cue_path)[0] + ".bin"
-             if os.path.exists(alt_bin):
-                 bin_path = alt_bin
+        # If not found, try replacing extension of CUE
+        if not os.path.exists(source_path):
+             base = os.path.splitext(cue_path)[0]
+             # Try common extensions
+             for ext in ['.bin', '.wav', '.flac', '.ape', '.wv']:
+                 alt_path = base + ext
+                 if os.path.exists(alt_path):
+                     source_path = alt_path
+                     break
              else:
-                 print(f"BIN file not found: {bin_path}")
+                 print(f"Source file not found: {bin_filename}")
                  return []
+        
+        print(f"Using source: {source_path}")
+        
+        # Detect if it's raw BIN or container format
+        lower_ext = os.path.splitext(source_path)[1].lower()
+        is_raw_bin = lower_ext == '.bin'
             
         generated_files = []
         
-        for i, (start, end, track_num) in enumerate(tracks):
-            track_name = f"Track {track_num:02d}"
+        for i, track_data in enumerate(tracks):
+            start, end, track_num, track_title, track_performer = track_data
+            
+            # Use track title if available, otherwise default
+            if track_title:
+                # Sanitize filename (remove invalid Windows chars)
+                safe_title = track_title.replace('/', '-').replace('\\', '-').replace(':', '-').replace('*', '').replace('?', '').replace('"', "'").replace('<', '').replace('>', '').replace('|', '')
+                safe_artist = (track_performer or metadata.get('album_artist', '')).replace('/', '-').replace('\\', '-').replace(':', '-').replace('*', '').replace('?', '').replace('"', "'").replace('<', '').replace('>', '').replace('|', '')
+                
+                if safe_artist:
+                    track_name = f"{track_num:02d} - {safe_title} - {safe_artist}"
+                else:
+                    track_name = f"{track_num:02d} - {safe_title}"
+            else:
+                track_name = f"Track {track_num:02d}"
+            
             output_path = os.path.join(output_dir, f"{track_name}.flac")
             
             # Formulate FFmpeg command
-            # Input is Raw CDDA: -f s16le -ar 44100 -ac 2
-            cmd = [
-                self.FFMPEG_PATH, "-y",
-                "-f", "s16le", "-ar", "44100", "-ac", "2",
-                "-i", bin_path,
-                "-ss", f"{start:.3f}"
-            ]
+            if is_raw_bin:
+                # Raw CDDA format
+                cmd = [
+                    self.FFMPEG_PATH, "-y",
+                    "-f", "s16le", "-ar", "44100", "-ac", "2",
+                    "-i", source_path,
+                    "-ss", f"{start:.3f}"
+                ]
+            else:
+                # Auto-detect format (WAV/FLAC/APE)
+                cmd = [
+                    self.FFMPEG_PATH, "-y",
+                    "-i", source_path,
+                    "-ss", f"{start:.3f}"
+                ]
             
             if end is not None:
                 cmd.extend(["-to", f"{end:.3f}"])
@@ -690,11 +788,30 @@ class AudioProcessor:
             cmd.extend([output_path])
             
             try:
-                subprocess.run(cmd, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                result = subprocess.run(cmd, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+                
+                # Tag the file
+                tag_metadata = {
+                    'title': track_title or f"Track {track_num}",
+                    'artist': track_performer or metadata.get('album_artist', ''),
+                    'album': metadata.get('album', ''),
+                    'albumartist': metadata.get('album_artist', ''),
+                    'tracknumber': str(track_num),
+                    'date': metadata.get('date', ''),
+                    'genre': metadata.get('genre', '')
+                }
+                self.tag_file(output_path, tag_metadata)
+                
                 generated_files.append(output_path)
-                print(f"Extracted: {track_name}")
-            except Exception as e:
-                print(f"Failed to extract Track {track_num}: {e}")
+                print(f"Extracted & Tagged: {track_name}")
+            except subprocess.CalledProcessError as e:
+                error_msg = f"Failed to extract Track {track_num}:\n"
+                error_msg += f"  Command: {' '.join(cmd)}\n"
+                error_msg += f"  Stderr: {e.stderr}\n"
+                print(error_msg)
+                # Also save to file
+                with open("ffmpeg_error.log", "a", encoding="utf-8") as f:
+                    f.write(error_msg + "\n" + "="*80 + "\n")
                 
         return generated_files
 
