@@ -6,9 +6,9 @@
 
 *   **Native NRG Support:** Directly reads Nero Disc Image (`.nrg`) files to extract audio tracks *without* mounting or Administrator privileges.
 *   **Universal Compatibility:**
-    *   **SACD ISO:** Extracts DSD/DSF and converts to FLAC automatically.
-    *   **Audio CD:** Rips `.cda` tracks from physical drives.
-    *   **Legacy Images:** Handles other formats via fallback mounting (if transparent).
+    *   **Disc Images:** `.nrg`, `.iso` (SACD/Data), `.bin/.cue`.
+    *   **Audio Files:** `.flac`, `.wav`, `.mp3`, `.m4a`. (Auto-splits based on silence).
+    *   **Physical Media:** Rips Audio CDs directly.
 *   **High Quality Output:** Extracts to FLAC (Free Lossless Audio Codec) by default.
 *   **Smart Automation:** Automatically detects silence to split tracks if cue sheet/metadata is missing.
 *   **Metadata Integration:**
