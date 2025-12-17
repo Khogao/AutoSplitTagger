@@ -1,4 +1,4 @@
-import os
+﻿import os
 import subprocess
 import json
 import re
@@ -817,67 +817,33 @@ class AudioProcessor:
 
     def process_iso_workflow(self, file_path, output_dir):
         """
-        New Main Workflow for ISO/NRG/CUE.
+        Simplified Workflow for ISO/NRG/CUE (No Mounting).
         Returns list of generated files.
         """
         print(f"DEBUG: Entered process_iso_workflow with {file_path}")
-        generated_files = []
         lower_path = file_path.lower()
         
-        # 0. CUE SHEET Support
+        # 1. CUE SHEET Support
         if lower_path.endswith('.cue'):
-             print("Detected CUE Sheet. Attempting Direct Bin Extraction...")
+             print("Detected CUE Sheet. Direct extraction...")
              return self.extract_cue_direct(file_path, output_dir)
-
-        is_nrg = lower_path.endswith('.nrg')
     
-    # 1. DIRECT NRG EXTRACTION (New Priority)
-        if is_nrg:
-            print("Detected NRG. Attempting Direct Parsing (No Mount)...")
+        # 2. NRG Direct Extraction
+        if lower_path.endswith('.nrg'):
+            print("Detected NRG. Direct parsing...")
             res = self.extract_nrg_direct(file_path, output_dir)
             if res:
                 return res
-            print("Direct Parsing failed. Falling back to Legacy Mount/Convert.")
-
-        # ... Legacy Logic Below (Mounting) ...
-        active_iso_path = file_path
-        created_temp_iso = False
-
-        # If it was NRG and Direct failed, we try Convert -> ISO
-        if is_nrg:
-             # ... existing convert logic ...
-             iso_path = self.convert_nrg_to_iso(file_path, output_dir)
-             if iso_path:
-                active_iso_path = iso_path
-                created_temp_iso = True
-             else:
-                return []
+            print("NRG direct parsing failed.")
+            return []
         
-        # 2. Mount ISO
-        drive = MountManager.mount(active_iso_path)
-        # ... rest of existing function ...
-        if not drive:
-             # ...
-             return self.extract_sacd_legacy(active_iso_path, output_dir)
-
-        disc_type = DiscInspector.identify(drive)
-        # ...
-        if disc_type == "SACD":
-             MountManager.unmount(active_iso_path)
-             return self.extract_sacd_legacy(active_iso_path, output_dir)
-        elif disc_type == "AUDIOCD":
-             res = self.rip_audio_cd(drive, output_dir)
-             MountManager.unmount(active_iso_path)
-             return res
-        else:
-             MountManager.unmount(active_iso_path)
+        # 3. ISO - Try SACD extraction
+        if lower_path.endswith('.iso'):
+            print("Detected ISO. Attempting SACD extraction...")
+            return self.extract_sacd_legacy(file_path, output_dir)
         
-        # Cleanup
-        if created_temp_iso and os.path.exists(active_iso_path):
-             try: os.remove(active_iso_path)
-             except: pass
-             
-        return generated_files
+        print(f"Unsupported file type: {file_path}")
+        return []
 
     def rip_audio_cd(self, drive_path, output_dir):
         """
@@ -964,11 +930,11 @@ class AudioProcessor:
             print(f"Error tagging {file_path}: {e}")
 
     def retag_from_cue(self, cue_path, folder_path):
-        ''''''
+        """
         Re-tag existing audio files in a folder using metadata from CUE file.
         Used for 'Widowed' folders (tracks exist but may lack proper tags).
         Returns: number of files re-tagged
-        ''''''
+        """
         print(f'Re-tagging from CUE: {cue_path}')
         
         # Parse CUE for metadata
@@ -1018,3 +984,4 @@ class AudioProcessor:
             print(f'Re-tagged: {os.path.basename(file_path)}')
         
         return tagged_count
+
