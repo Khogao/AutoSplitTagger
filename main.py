@@ -116,12 +116,17 @@ class AutoSplitTagger(QMainWindow):
         self.list_tracks.addItem(message)
         self.list_tracks.scrollToBottom()
 
-    def browse_file(self):
-        fnames, _ = QFileDialog.getOpenFileNames(self, "Select Audio Files", "", "All Audio (*.flac *.wav *.iso *.nrg);;All Files (*)")
-        if fnames:
-            self.file_queue.extend(fnames)
+    def browse_files(self):
+        files, _ = QFileDialog.getOpenFileNames(
+            self,
+            "Select Disc Images or Audio Files",
+            "",
+            "Media Files (*.nrg *.iso *.bin *.cue *.flac *.wav *.mp3 *.m4a);;All Files (*)"
+        )
+        if files:
+            self.file_queue.extend(files)
             self.lbl_status.setText(f"Selected {len(self.file_queue)} files")
-            self.list_tracks.addItem(f"Added {len(fnames)} files to queue.")
+            self.list_tracks.addItem(f"Added {len(files)} files to queue.")
             self.btn_process.setEnabled(True)
 
     def log_debug(self, msg):

@@ -92,11 +92,14 @@ class AudioProcessor:
             return os.path.join(sys._MEIPASS, relative_path)
         
         # Dev Mode: Hardcoded paths or relative
-        # We fallback to the known dev paths if not bundled
+        # Backup: Look in ./bin folder relative to Main Script
+        base_path = os.path.dirname(os.path.abspath(__file__))
+        bin_dir = os.path.join(base_path, "bin")
+        
         dev_map = {
-            "ffmpeg.exe": r"D:\Work\Antigravity\references\resources\ffmpeg.exe",
-            "fpcalc.exe": r"D:\Work\Antigravity\references\fpcalc.exe",
-            "sacd_extract.exe": r"D:\Work\Antigravity\references\sacd_extract.exe"
+            "ffmpeg.exe": os.path.join(bin_dir, "ffmpeg.exe"),
+            "fpcalc.exe": os.path.join(bin_dir, "fpcalc.exe"),
+            "sacd_extract.exe": os.path.join(bin_dir, "sacd_extract.exe")
         }
         return dev_map.get(relative_path, os.path.join(os.path.abspath("."), relative_path))
 
@@ -585,16 +588,133 @@ class AudioProcessor:
             
         return generated_files
 
+    # --- CUE / BIN SUPPORT ---
+    def parse_cue(self, cue_path):
+        """
+        Parses .cue file to find the BIN file and Track Timestamps.
+        Returns: (bin_filename, tracks_list)
+                 tracks_list = [(start_sec, end_sec, track_num)]
+        """
+        tracks = []
+        bin_file = None
+        current_track_idx = 0
+        current_index01 = 0.0
+        
+        try:
+            with open(cue_path, 'r', encoding='utf-8', errors='ignore') as f:
+                lines = f.readlines()
+                
+            for line in lines:
+                parts = line.strip().split()
+                if not parts: continue
+                
+                # FILE "Name.bin" BINARY
+                if parts[0] == 'FILE':
+                    # Extract filename between quotes
+                    match = re.search(r'FILE "(.*)"', line)
+                    if match:
+                        bin_file = match.group(1)
+                    else:
+                        # Fallback simple split if regex fails (rare)
+                        bin_file = " ".join(parts[1:-1]).strip('"')
+                        
+                # TRACK 01 AUDIO
+                elif parts[0] == 'TRACK':
+                    current_track_idx = int(parts[1])
+                    
+                # INDEX 01 00:00:00
+                elif parts[0] == 'INDEX' and parts[1] == '01':
+                    timestamp = parts[2] # MM:SS:FF
+                    try:
+                        m, s, f_res = map(int, timestamp.split(':'))
+                        seconds = m*60 + s + f_res/75.0
+                        
+                        if current_track_idx > 1 and tracks:
+                            # Close previous track
+                            prev_start, _, prev_id = tracks[-1]
+                            tracks[-1] = (prev_start, seconds, prev_id)
+                            
+                        # Start new track
+                        tracks.append((seconds, None, current_track_idx)) # End is None for now
+                    except ValueError:
+                        pass # Ignore malformed index
+            
+            # Handle last track end? We leave it None.
+            
+        except Exception as e:
+            print(f"CUE Parse Error: {e}")
+            return None, []
+            
+        return bin_file, tracks
+
+    def extract_cue_direct(self, cue_path, output_dir):
+        print(f"Processing CUE Sheet: {cue_path}")
+        bin_filename, tracks = self.parse_cue(cue_path)
+        
+        if not bin_filename or not tracks:
+            print("Invalid CUE or no tracks found.")
+            return []
+            
+        # Locate BIN file
+        # Usually in same dir as CUE
+        cue_dir = os.path.dirname(cue_path)
+        bin_path = os.path.join(cue_dir, bin_filename)
+        
+        # If BIN not found, try replacing extension of CUE to BIN (common mismatch)
+        if not os.path.exists(bin_path):
+             alt_bin = os.path.splitext(cue_path)[0] + ".bin"
+             if os.path.exists(alt_bin):
+                 bin_path = alt_bin
+             else:
+                 print(f"BIN file not found: {bin_path}")
+                 return []
+            
+        generated_files = []
+        
+        for i, (start, end, track_num) in enumerate(tracks):
+            track_name = f"Track {track_num:02d}"
+            output_path = os.path.join(output_dir, f"{track_name}.flac")
+            
+            # Formulate FFmpeg command
+            # Input is Raw CDDA: -f s16le -ar 44100 -ac 2
+            cmd = [
+                self.FFMPEG_PATH, "-y",
+                "-f", "s16le", "-ar", "44100", "-ac", "2",
+                "-i", bin_path,
+                "-ss", f"{start:.3f}"
+            ]
+            
+            if end is not None:
+                cmd.extend(["-to", f"{end:.3f}"])
+                
+            cmd.extend([output_path])
+            
+            try:
+                subprocess.run(cmd, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                generated_files.append(output_path)
+                print(f"Extracted: {track_name}")
+            except Exception as e:
+                print(f"Failed to extract Track {track_num}: {e}")
+                
+        return generated_files
+
     def process_iso_workflow(self, file_path, output_dir):
         """
-        New Main Workflow for ISO/NRG.
+        New Main Workflow for ISO/NRG/CUE.
         Returns list of generated files.
         """
         print(f"DEBUG: Entered process_iso_workflow with {file_path}")
         generated_files = []
-        is_nrg = file_path.lower().endswith('.nrg')
+        lower_path = file_path.lower()
         
-        # 1. DIRECT NRG EXTRACTION (New Priority)
+        # 0. CUE SHEET Support
+        if lower_path.endswith('.cue'):
+             print("Detected CUE Sheet. Attempting Direct Bin Extraction...")
+             return self.extract_cue_direct(file_path, output_dir)
+
+        is_nrg = lower_path.endswith('.nrg')
+    
+    # 1. DIRECT NRG EXTRACTION (New Priority)
         if is_nrg:
             print("Detected NRG. Attempting Direct Parsing (No Mount)...")
             res = self.extract_nrg_direct(file_path, output_dir)
