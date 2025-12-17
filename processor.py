@@ -962,3 +962,59 @@ class AudioProcessor:
             print("Mutagen not installed. Skipping tags.")
         except Exception as e:
             print(f"Error tagging {file_path}: {e}")
+
+    def retag_from_cue(self, cue_path, folder_path):
+        ''''''
+        Re-tag existing audio files in a folder using metadata from CUE file.
+        Used for 'Widowed' folders (tracks exist but may lack proper tags).
+        Returns: number of files re-tagged
+        ''''''
+        print(f'Re-tagging from CUE: {cue_path}')
+        
+        # Parse CUE for metadata
+        bin_filename, tracks, metadata = self.parse_cue(cue_path)
+        
+        if not tracks or not metadata:
+            print('No metadata found in CUE')
+            return 0
+        
+        # Find audio files in folder
+        audio_exts = {'.flac', '.wav', '.mp3', '.m4a', '.ape', '.wv'}
+        audio_files = []
+        
+        for f in os.listdir(folder_path):
+            if os.path.splitext(f)[1].lower() in audio_exts:
+                full_path = os.path.join(folder_path, f)
+                # Skip large source files
+                if os.path.getsize(full_path) < 100 * 1024 * 1024:
+                    audio_files.append(full_path)
+        
+        audio_files.sort()  # Sort by filename
+        
+        if len(audio_files) != len(tracks):
+            print(f'Warning: {len(audio_files)} files but {len(tracks)} tracks in CUE')
+        
+        tagged_count = 0
+        
+        # Match files to tracks (by index)
+        for i, file_path in enumerate(audio_files):
+            if i >= len(tracks):
+                break
+                
+            start, end, track_num, track_title, track_performer = tracks[i]
+            
+            tag_metadata = {
+                'title': track_title or f'Track {track_num}',
+                'artist': track_performer or metadata.get('album_artist', ''),
+                'album': metadata.get('album', ''),
+                'albumartist': metadata.get('album_artist', ''),
+                'tracknumber': str(track_num),
+                'date': metadata.get('date', ''),
+                'genre': metadata.get('genre', '')
+            }
+            
+            self.tag_file(file_path, tag_metadata)
+            tagged_count += 1
+            print(f'Re-tagged: {os.path.basename(file_path)}')
+        
+        return tagged_count
