@@ -7,9 +7,10 @@ if sys.platform.startswith('win'):
         sys.stdout.reconfigure(encoding='utf-8')
     if sys.stderr is not None:
         sys.stderr.reconfigure(encoding='utf-8')
-from PyQt6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, 
-                             QLabel, QPushButton, QListWidget, QProgressBar, 
-                             QFileDialog, QMessageBox, QSpinBox, QDoubleSpinBox)
+
+from PyQt6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QTabWidget,
+                             QLabel, QPushButton, QListWidget, QProgressBar, QTableWidget, QTableWidgetItem,
+                             QFileDialog, QMessageBox, QSpinBox, QDoubleSpinBox, QLineEdit, QHeaderView)
 from PyQt6.QtCore import Qt, pyqtSignal, QObject
 from processor import AudioProcessor
 
@@ -23,19 +24,55 @@ class AutoSplitTagger(QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("Antigravity AutoSplitTagger")
-        self.setGeometry(100, 100, 600, 500)
+        self.setGeometry(100, 100, 800, 600)
         self.setAcceptDrops(True)
 
         self.processor = AudioProcessor()
-        self.file_queue = [] # Queue for batch processing
+        self.file_queue = []
+        self.married_folders = []
 
-        # UI Setup
+        # UI Setup with Tabs
         central_widget = QWidget()
         self.setCentralWidget(central_widget)
-        layout = QVBoxLayout(central_widget)
+        main_layout = QVBoxLayout(central_widget)
+
+        # Tab Widget
+        self.tabs = QTabWidget()
+        main_layout.addWidget(self.tabs)
+
+        # Tab 1: Single File Processing
+        self.tab_single = QWidget()
+        self.setup_single_tab()
+        self.tabs.addTab(self.tab_single, "Single File")
+
+        # Tab 2: Batch Processing
+        self.tab_batch = QWidget()
+        self.setup_batch_tab()
+        self.tabs.addTab(self.tab_batch, "Batch Processing")
+
+        self.signals = WorkerSignals()
+        self.signals.progress.connect(self.update_log)
+        self.signals.finished.connect(self.on_process_finished)
+        self.signals.error.connect(self.show_error)
+        self.signals.success.connect(self.show_success)
+
+        # CLI / Auto-Run Check
+        self.auto_exit = False
+        if len(sys.argv) > 1:
+            potential_file = sys.argv[1]
+            if os.path.exists(potential_file):
+                print(f"CLI Mode: Auto-processing {potential_file}")
+                self.file_queue = [potential_file]
+                self.list_tracks.addItem(f"Loaded via CLI: {potential_file}")
+                self.auto_exit = True 
+                self.start_processing()
+
+    def setup_single_tab(self):
+        """Setup Single File Processing Tab"""
+        layout = QVBoxLayout(self.tab_single)
 
         # header
-        self.lbl_status = QLabel("Drag & Drop Compilation ISO/NRG/FLAC files here")
+        self.lbl_status = QLabel("Drag & Drop Compilation ISO/NRG/CUE/FLAC files here")
         self.lbl_status.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.lbl_status.setStyleSheet("font-size: 14px; font-weight: bold; margin: 10px;")
         layout.addWidget(self.lbl_status)
@@ -67,67 +104,185 @@ class AutoSplitTagger(QMainWindow):
         controls_layout.addWidget(self.lbl_dur)
         controls_layout.addWidget(self.spin_dur)
         
-        # Browse Button (Fallback for D&D)
+        # Browse Button
         self.btn_browse = QPushButton("Browse Files...")
-        self.btn_browse.clicked.connect(self.browse_file)
+        self.btn_browse.clicked.connect(self.browse_files)
         layout.addWidget(self.btn_browse)
 
         layout.addLayout(controls_layout)
 
-        # buttons
+        # Process button
         self.btn_process = QPushButton("START BATCH PROCESSING")
         self.btn_process.setStyleSheet("background-color: #4CAF50; color: white; padding: 10px; font-weight: bold;")
         self.btn_process.setEnabled(False)
         self.btn_process.clicked.connect(self.start_processing)
         layout.addWidget(self.btn_process)
 
-        self.signals = WorkerSignals()
-        self.signals.progress.connect(self.update_log)
-        self.signals.finished.connect(self.on_process_finished)
-        self.signals.error.connect(self.show_error)
-        self.signals.success.connect(self.show_success)
+    def setup_batch_tab(self):
+        """Setup Batch Processing Tab"""
+        layout = QVBoxLayout(self.tab_batch)
 
-        # CLI / Auto-Run Check
-        self.auto_exit = False
-        if len(sys.argv) > 1:
-            potential_file = sys.argv[1]
-            if os.path.exists(potential_file):
-                print(f"CLI Mode: Auto-processing {potential_file}")
-                self.file_queue = [potential_file]
-                self.list_tracks.addItem(f"Loaded via CLI: {potential_file}")
-                self.auto_exit = True 
-                self.start_processing()
+        # Header
+        lbl_batch_header = QLabel("Batch Process Married Folders (CUE/BIN not yet split)")
+        lbl_batch_header.setStyleSheet("font-size: 14px; font-weight: bold; margin: 10px;")
+        layout.addWidget(lbl_batch_header)
+
+        # Folder selection
+        folder_layout = QHBoxLayout()
+        self.txt_scan_folder = QLineEdit()
+        self.txt_scan_folder.setPlaceholderText("Select folder to scan...")
+        self.txt_scan_folder.setText("d:/music")  # Default
+        folder_layout.addWidget(self.txt_scan_folder)
+        
+        self.btn_browse_folder = QPushButton("Browse...")
+        self.btn_browse_folder.clicked.connect(self.browse_scan_folder)
+        folder_layout.addWidget(self.btn_browse_folder)
+        
+        self.btn_scan = QPushButton("Scan")
+        self.btn_scan.setStyleSheet("background-color: #2196F3; color: white; padding: 5px;")
+        self.btn_scan.clicked.connect(self.scan_library)
+        folder_layout.addWidget(self.btn_scan)
+        
+        layout.addLayout(folder_layout)
+
+        # Results table
+        self.table_married = QTableWidget()
+        self.table_married.setColumnCount(4)
+        self.table_married.setHorizontalHeaderLabels(["Folder", "CUE Files", "Source Files", "Status"])
+        self.table_married.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
+        layout.addWidget(self.table_married)
+
+        # Stats
+        self.lbl_stats = QLabel("Ready to scan...")
+        layout.addWidget(self.lbl_stats)
+
+        # Batch progress
+        self.batch_progress = QProgressBar()
+        layout.addWidget(self.batch_progress)
+
+        # Process button
+        self.btn_process_batch = QPushButton("Process All Married Folders")
+        self.btn_process_batch.setStyleSheet("background-color: #FF9800; color: white; padding: 10px; font-weight: bold;")
+        self.btn_process_batch.setEnabled(False)
+        self.btn_process_batch.clicked.connect(self.start_batch_processing)
+        layout.addWidget(self.btn_process_batch)
+
+    def browse_scan_folder(self):
+        folder = QFileDialog.getExistingDirectory(self, "Select Music Library Folder")
+        if folder:
+            self.txt_scan_folder.setText(folder)
+
+    def scan_library(self):
+        """Scan library for married folders"""
+        root_path = self.txt_scan_folder.text()
+        if not os.path.exists(root_path):
+            QMessageBox.warning(self, "Error", "Folder does not exist!")
+            return
+
+        self.lbl_stats.setText("Scanning...")
+        self.married_folders = []
+        
+        # Scan logic (from scan_library.py)
+        for root, dirs, files in os.walk(root_path):
+            cue_files = [f for f in files if f.lower().endswith('.cue')]
+            if not cue_files:
+                continue
+                
+            audio_exts = {'.flac', '.wav', '.mp3', '.m4a', '.ape', '.wv', '.dsf', '.dff'}
+            source_files = []
+            track_files = []
+            
+            for f in files:
+                lower = f.lower()
+                ext = os.path.splitext(lower)[1]
+                if lower.endswith(('.bin', '.iso', '.nrg', '.img')):
+                    source_files.append(f)
+                    continue
+                if ext in audio_exts:
+                    try:
+                        if os.path.getsize(os.path.join(root, f)) > 100 * 1024 * 1024:
+                            source_files.append(f)
+                        else:
+                            track_files.append(f)
+                    except:
+                        pass
+            
+            # Married = Has Source, No Tracks
+            if source_files and not track_files:
+                self.married_folders.append({
+                    'path': root,
+                    'cue': cue_files[0],
+                    'cue_count': len(cue_files),
+                    'source_count': len(source_files)
+                })
+
+        # Update table
+        self.table_married.setRowCount(len(self.married_folders))
+        for i, folder in enumerate(self.married_folders):
+            self.table_married.setItem(i, 0, QTableWidgetItem(os.path.relpath(folder['path'], root_path)))
+            self.table_married.setItem(i, 1, QTableWidgetItem(str(folder['cue_count'])))
+            self.table_married.setItem(i, 2, QTableWidgetItem(str(folder['source_count'])))
+            self.table_married.setItem(i, 3, QTableWidgetItem("Pending"))
+
+        self.lbl_stats.setText(f"Found {len(self.married_folders)} married folders ready to process")
+        self.btn_process_batch.setEnabled(len(self.married_folders) > 0)
+
+    def start_batch_processing(self):
+        """Process all married folders"""
+        if not self.married_folders:
+            return
+
+        self.btn_process_batch.setEnabled(False)
+        self.batch_progress.setMaximum(len(self.married_folders))
+        self.batch_progress.setValue(0)
+
+        def batch_worker():
+            for i, folder in enumerate(self.married_folders):
+                cue_path = os.path.join(folder['path'], folder['cue'])
+                self.signals.progress.emit(f"Processing {i+1}/{len(self.married_folders)}: {folder['path']}")
+                
+                try:
+                    result = self.processor.process_iso_workflow(cue_path, folder['path'])
+                    if result:
+                        self.table_married.setItem(i, 3, QTableWidgetItem(f"✓ {len(result)} files"))
+                    else:
+                        self.table_married.setItem(i, 3, QTableWidgetItem("✗ Failed"))
+                except Exception as e:
+                    self.table_married.setItem(i, 3, QTableWidgetItem(f"✗ Error: {str(e)[:20]}"))
+                
+                self.batch_progress.setValue(i + 1)
+
+            self.signals.success.emit(f"Batch processing complete! Processed {len(self.married_folders)} folders.")
+            self.signals.finished.emit()
+
+        thread = threading.Thread(target=batch_worker, daemon=True)
+        thread.start()
 
     def dragEnterEvent(self, event):
         if event.mimeData().hasUrls():
-            event.accept()
-        else:
-            event.ignore()
+            event.acceptProposedAction()
 
     def dropEvent(self, event):
-        files = [u.toLocalFile() for u in event.mimeData().urls()]
-        if files:
-            self.file_queue.extend(files) # Append all dropped files
-            self.lbl_status.setText(f"Selected {len(self.file_queue)} files")
-            self.list_tracks.addItem(f"Added {len(files)} files to queue.")
-            self.btn_process.setEnabled(True)
+        for url in event.mimeData().urls():
+            file_path = url.toLocalFile()
+            if file_path not in self.file_queue:
+                self.file_queue.append(file_path)
+                self.list_tracks.addItem(f"Queued: {os.path.basename(file_path)}")
+        self.btn_process.setEnabled(len(self.file_queue) > 0)
 
     def update_log(self, message):
         self.list_tracks.addItem(message)
-        self.list_tracks.scrollToBottom()
 
     def browse_files(self):
         files, _ = QFileDialog.getOpenFileNames(
-            self,
-            "Select Disc Images or Audio Files",
-            "",
-            "Media Files (*.nrg *.iso *.bin *.cue *.flac *.wav *.mp3 *.m4a);;All Files (*)"
+            self, "Select Files", "", 
+            "All Supported (*.iso *.nrg *.cue *.bin *.flac *.wav *.mp3 *.m4a);;ISO Files (*.iso);;NRG Files (*.nrg);;CUE Files (*.cue);;Audio Files (*.flac *.wav *.mp3 *.m4a)"
         )
-        if files:
-            self.file_queue.extend(files)
-            self.lbl_status.setText(f"Selected {len(self.file_queue)} files")
-            self.list_tracks.addItem(f"Added {len(files)} files to queue.")
-            self.btn_process.setEnabled(True)
+        for file_path in files:
+            if file_path not in self.file_queue:
+                self.file_queue.append(file_path)
+                self.list_tracks.addItem(f"Queued: {os.path.basename(file_path)}")
+        self.btn_process.setEnabled(len(self.file_queue) > 0)
 
     def log_debug(self, msg):
         try:
@@ -135,116 +290,80 @@ class AutoSplitTagger(QMainWindow):
                 f.write(msg + "\n")
         except:
             pass
-        print(msg)
 
     def show_error(self, message):
+        self.lbl_status.setText("❌ Error")
+        self.lbl_status.setStyleSheet("color: red; font-weight: bold;")
+        QMessageBox.critical(self, "Error", message)
         self.log_debug(f"ERROR: {message}")
-        if self.auto_exit:
-            self.lbl_status.setText(f"ERROR: {message}")
-            self.list_tracks.addItem(f"CRITICAL ERROR: {message}")
-            # Do NOT quit. Let user read it.
-        else:
-            QMessageBox.critical(self, "Error", message)
-            self.btn_process.setEnabled(True)
 
     def show_success(self, message):
-        self.log_debug(f"SUCCESS: {message}")
-        if self.auto_exit:
-            self.lbl_status.setText("DONE (Check Log)")
-            QApplication.quit()
-        else:
-            QMessageBox.information(self, "Success", message)
-            self.btn_process.setEnabled(True)
+        self.lbl_status.setText("✅ Success!")
+        self.lbl_status.setStyleSheet("color: green; font-weight: bold;")
+        QMessageBox.information(self, "Success", message)
 
     def on_process_finished(self):
-        self.list_tracks.addItem("=== BATCH DONE ===")
-        self.progress_bar.setValue(100)
-        pass # Handle auto-exit in show_success
+        self.btn_process.setEnabled(True)
+        self.btn_process_batch.setEnabled(len(self.married_folders) > 0)
+        if self.auto_exit:
+            self.close()
 
     def start_processing(self):
         if not self.file_queue:
             return
-        
         self.btn_process.setEnabled(False)
         self.progress_bar.setValue(0)
+        db_threshold = self.spin_db.value()
+        min_duration = self.spin_dur.value()
         
-        db = self.spin_db.value()
-        dur = self.spin_dur.value()
-        
-        # Clone queue to avoid threading issues if modified? (Though we process sequentially)
-        queue_copy = list(self.file_queue)
-        threading.Thread(target=self.run_logic, args=(queue_copy, db, dur), daemon=True).start()
+        thread = threading.Thread(
+            target=self.run_logic, 
+            args=(self.file_queue.copy(), db_threshold, min_duration),
+            daemon=True
+        )
+        thread.start()
 
     def run_logic(self, queue, db, dur):
         try:
-            import processor
-            self.processor = processor.AudioProcessor()
-            
-            output_dir = "" # Will be set in loop
-            total_files_generated = 0
-            
-            for index, file_path in enumerate(queue):
-                self.signals.progress.emit(f"--- Processing File {index+1}/{len(queue)}: {os.path.basename(file_path)} ---")
+            for file_path in queue:
+                self.signals.progress.emit(f"Processing: {os.path.basename(file_path)}")
                 
+                lower = file_path.lower()
                 output_dir = os.path.dirname(file_path)
-                split_files = []
                 
-                # Check extension
-                is_iso_container = file_path.lower().endswith('.iso') or file_path.lower().endswith('.nrg')
+                # Disc Image Workflow (ISO/NRG/CUE)
+                if lower.endswith(('.iso', '.nrg', '.cue')):
+                    generated_files = self.processor.process_iso_workflow(file_path, output_dir)
+                    if generated_files:
+                        self.signals.success.emit(f"✅ Extracted {len(generated_files)} tracks from {os.path.basename(file_path)}")
+                    else:
+                        self.signals.error.emit(f"Failed to process {os.path.basename(file_path)}")
+                    continue
                 
-                fallback_needed = False
-                
-                # BRANCH: ISO/NRG
-                if is_iso_container:
-                    self.signals.progress.emit("DETECTED DISC IMAGE (ISO/NRG): Processing...")
-                    
-                # New Universal Workflow: Mount -> Inspect -> Act
-                    split_files = self.processor.process_iso_workflow(file_path, output_dir)
-                    
-                    if not split_files:
-                         self.signals.progress.emit("Warning: No audio files extracted from Disc Image.")
-
-                else:
-                    # Standard Audio File (FLAC, WAV, etc.)
-                    self.signals.progress.emit(f"Step 1: Detecting Silence on {os.path.basename(file_path)}...")
+                # Audio File Workflow (Silence Detection)
+                if lower.endswith(('.flac', '.wav', '.mp3', '.m4a')):
+                    self.signals.progress.emit("Detecting silence...")
                     tracks = self.processor.detect_silence(file_path, db_threshold=db, min_duration=dur)
                     
                     if not tracks:
-                        self.signals.progress.emit(f"Warning: No silence detected on {os.path.basename(file_path)}. Skipping.")
-                    else:
-                        self.signals.progress.emit(f"Silence Detected. Splitting into {len(tracks)} tracks...")
-                        split_files = self.processor.split_file(file_path, tracks, output_dir)
+                        self.signals.error.emit("No silence detected. Try adjusting threshold.")
+                        continue
+                    
+                    self.signals.progress.emit(f"Found {len(tracks)} tracks. Splitting...")
+                    split_files = self.processor.split_file(file_path, tracks, output_dir)
+                    
+                    if split_files:
+                        self.signals.success.emit(f"✅ Split into {len(split_files)} tracks!")
+                    continue
 
-                # COMMON: Fingerprint & Tag (Result from either ISO Workflow or Standard Split)
-                if split_files:
-                    self.signals.progress.emit(f"Generated {len(split_files)} files. Starting Fingerprinting...")
-                    total_files_generated += len(split_files)
-                    for i, fpath in enumerate(split_files):
-                         # ... (Tagging logic same as before, simplified for brevity in this replace)
-                         self.signals.progress.emit(f"Processing Track {i+1}: {os.path.basename(fpath)}")
-                         dur_val, fp = self.processor.get_fingerprint(fpath)
-                         if dur_val and fp:
-                             meta = self.processor.lookup_metadata(dur_val, fp)
-                             if meta:
-                                 self.signals.progress.emit(f"  > Tagged: {meta['title']}")
-                                 self.processor.tag_file(fpath, meta)
-                             else:
-                                 self.signals.progress.emit("  > No Metadata found.")
-                
-            if total_files_generated == 0:
-                if total_files_generated == 0:
-                    self.signals.error.emit("Finished with NO output.\n[ISO/NRG]: Mount Failed? (Run as Admin)\n[Audio]: Silence Check Failed? (Adjust Threshold)")
-            else:
-                self.signals.success.emit(f"Batch Processing Complete! Generated {total_files_generated} files.")
             self.signals.finished.emit()
-
         except Exception as e:
-            self.signals.error.emit(str(e))
+            self.signals.error.emit(f"Processing Error: {str(e)}")
+            self.signals.finished.emit()
 
 if __name__ == "__main__":
     try:
         app = QApplication(sys.argv)
-        # Global Exception Hook
         sys.excepthook = lambda cls, exception, traceback: open("crash_log.txt", "a").write(f"UNCAUGHT: {exception}\n")
         
         window = AutoSplitTagger()
